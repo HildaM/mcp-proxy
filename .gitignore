@@ -142,3 +142,5 @@ fabric.properties
 
 /mcp-proxy
 /build
+
+config.json

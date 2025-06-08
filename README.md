@@ -16,6 +16,9 @@ An MCP proxy server that aggregates and serves multiple MCP resource servers thr
 git clone https://github.com/TBXark/mcp-proxy.git
 cd mcp-proxy
 make build
+# Create your own configuration file (see Security Configuration below)
+cp config.json.example config.json
+# Edit config.json and fill in your tokens
 ./build/mcp-proxy --config path/to/config.json
 ```
 
@@ -29,6 +32,7 @@ go install github.com/TBXark/mcp-proxy@latest
 
 > The Docker image supports two MCP calling methods by default: `npx` and `uvx`.
 ```bash
+# Create and configure your config.json first
 docker run -d -p 9090:9090 -v /path/to/config.json:/config/config.json ghcr.io/tbxark/mcp-proxy:latest
 # or 
 docker run -d -p 9090:9090 ghcr.io/tbxark/mcp-proxy:latest --config https://example.com/path/to/config.json
@@ -41,6 +45,16 @@ The server is configured using a JSON file. Below is an example configuration:
 
 > You can use [`https://tbxark.github.io/mcp-proxy`](https://tbxark.github.io/mcp-proxy) to convert the configuration of `mcp-proxy` into the configuration that `Claude` can use.
 
+### Security Configuration
+
+⚠️ **Security Warning**: The configuration file contains sensitive information such as authentication tokens and API keys. To prevent accidental exposure:
+
+1. The project provides `config.json.example` as a template. Do **NOT** commit your actual configuration file to version control systems
+2. When creating your own configuration, copy the example file and rename it to `config.json`
+3. In your `config.json`, replace all placeholders (like `YOUR_DEFAULT_TOKEN_HERE`) with actual values
+4. Ensure `.gitignore` already includes `config.json` (included by default)
+5. For production environments, consider using environment variables or secure key management systems
+
 ```jsonc
 {
   "mcpProxy": {
@@ -52,7 +66,7 @@ The server is configured using a JSON file. Below is an example configuration:
       "panicIfInvalid": false,
       "logEnabled": true,
       "authTokens": [
-        "DefaultTokens"
+        "YOUR_DEFAULT_TOKEN_HERE" // Replace with your actual token
       ]
     }
   },
@@ -64,7 +78,7 @@ The server is configured using a JSON file. Below is an example configuration:
         "@modelcontextprotocol/server-github"
       ],
       "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "<YOUR_TOKEN>"
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "YOUR_GITHUB_TOKEN_HERE" // Replace with your actual GitHub token
       },
       "options": {
         "toolFilter": {
@@ -84,12 +98,12 @@ The server is configured using a JSON file. Below is an example configuration:
         "panicIfInvalid": true,
         "logEnabled": false,
         "authTokens": [
-          "SpecificTokens"
+          "YOUR_SPECIFIC_TOKEN_HERE" // Replace with your actual token
         ]
       }
     },
     "amap": {
-      "url": "https://mcp.amap.com/sse?key=<YOUR_TOKEN>"
+      "url": "https://mcp.amap.com/sse?key=YOUR_AMAP_KEY_HERE" // Replace with your actual API key
     }
   }
 }

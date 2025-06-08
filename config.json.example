@@ -1,0 +1,45 @@
+{
+  "mcpProxy": {
+    "baseURL": "http://localhost:9090",
+    "addr": ":9090",
+    "name": "MCP Proxy",
+    "version": "1.0.0",
+    "options": {
+      "panicIfInvalid": false,
+      "logEnabled": true,
+      "authTokens": [
+        "YOUR_DEFAULT_TOKEN_HERE"
+      ]
+    }
+  },
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-github"
+      ],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "YOUR_GITHUB_TOKEN_HERE"
+      },
+      "options": {
+        "toolFilter": {
+          "mode": "block",
+          "list": [
+            "create_or_update_file"
+          ]
+        }
+      }
+    },
+    "fetch": {
+      "url": "https://example.com/mcp/fetch/sse",
+      "options": {
+        "panicIfInvalid": true,
+        "logEnabled": true,
+        "authTokens": [
+          "YOUR_SPECIFIC_TOKEN_HERE"
+        ]
+      }
+    }
+  }
+} 
