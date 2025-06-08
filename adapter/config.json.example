@@ -1,0 +1,56 @@
+{
+  "server": {
+    "addr": ":9091",
+    "name": "WeatherAPI Adapter",
+    "version": "1.0.0",
+    "baseURL": "http://localhost:9091"
+  },
+  "targetAPI": {
+    "baseURL": "http://api.weatherapi.com/v1",
+    "headers": {
+      "User-Agent": "MCP-Adapter/1.0"
+    },
+    "auth": {
+      "type": "apiKey",
+      "config": {
+        "key": "key",
+        "value": "${WEATHERAPI_KEY}",
+        "location": "query"
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "get_current_weather",
+      "description": "Get the current weather for a specified location.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "location": {
+            "type": "string",
+            "description": "The city name, e.g., London, Paris, San Francisco."
+          }
+        },
+        "required": ["location"]
+      },
+      "httpMapping": {
+        "method": "GET",
+        "path": "/current.json",
+        "parameterMapping": [
+          {
+            "source": "location",
+            "target": "q",
+            "in": "query",
+            "required": true
+          }
+        ]
+      },
+      "errorMapping": {
+        "401": "Unauthorized: Invalid API key.",
+        "403": "Forbidden: API key has been disabled."
+      }
+    }
+  ],
+  "prompts": [],
+  "resources": []
+} 
