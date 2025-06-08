@@ -1,56 +1,231 @@
 {
-  "server": {
-    "addr": ":9091",
-    "name": "WeatherAPI Adapter",
+  "adapter_proxy": {
+    "name": "Multi-Adapter Proxy",
     "version": "1.0.0",
-    "baseURL": "http://localhost:9091"
-  },
-  "targetAPI": {
-    "baseURL": "http://api.weatherapi.com/v1",
-    "headers": {
-      "User-Agent": "MCP-Adapter/1.0"
-    },
-    "auth": {
-      "type": "apiKey",
-      "config": {
-        "key": "key",
-        "value": "${WEATHERAPI_KEY}",
-        "location": "query"
+    "base_url": "http://localhost:9091",
+    "addr": ":9091",
+    "options": {
+      "panic_if_invalid": false,
+      "log_enabled": true,
+      "auth_tokens": [],
+      "tool_filter": {
+        "mode": "allow",
+        "tools": []
       }
     }
   },
-  "tools": [
-    {
-      "name": "get_current_weather",
-      "description": "Get the current weather for a specified location.",
-      "inputSchema": {
-        "type": "object",
-        "properties": {
-          "location": {
-            "type": "string",
-            "description": "The city name, e.g., London, Paris, San Francisco."
+  "adapter_servers": {
+    "jsonplaceholder": {
+      "target_api": {
+        "base_url": "https://jsonplaceholder.typicode.com",
+        "timeout": "30s",
+        "auth": {
+          "type": "none"
+        }
+      },
+      "tools": [
+        {
+          "name": "get_posts",
+          "description": "获取所有文章",
+          "input_schema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+          },
+          "http_mapping": {
+            "method": "GET",
+            "path": "/posts",
+            "headers": {
+              "Content-Type": "application/json"
+            }
           }
         },
-        "required": ["location"]
-      },
-      "httpMapping": {
-        "method": "GET",
-        "path": "/current.json",
-        "parameterMapping": [
-          {
-            "source": "location",
-            "target": "q",
-            "in": "query",
-            "required": true
+        {
+          "name": "get_post_by_id",
+          "description": "根据ID获取文章",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "integer",
+                "description": "文章ID"
+              }
+            },
+            "required": ["id"]
+          },
+          "http_mapping": {
+            "method": "GET",
+            "path": "/posts/{id}",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "parameter_mappings": [
+              {
+                "name": "id",
+                "location": "path"
+              }
+            ]
           }
-        ]
+        }
+      ],
+      "options": {
+        "panic_if_invalid": false,
+        "log_enabled": true,
+        "auth_tokens": [],
+        "tool_filter": {
+          "mode": "allow",
+          "tools": ["get_posts", "get_post_by_id"]
+        }
+      }
+    },
+    "weather_api": {
+      "target_api": {
+        "base_url": "https://api.openweathermap.org/data/2.5",
+        "timeout": "15s",
+        "auth": {
+          "type": "api_key",
+          "api_key": "${WEATHER_API_KEY}",
+          "location": "query",
+          "key_name": "appid"
+        }
       },
-      "errorMapping": {
-        "401": "Unauthorized: Invalid API key.",
-        "403": "Forbidden: API key has been disabled."
+      "tools": [
+        {
+          "name": "get_weather",
+          "description": "获取指定城市的天气信息",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "city": {
+                "type": "string",
+                "description": "城市名称"
+              },
+              "units": {
+                "type": "string",
+                "description": "温度单位",
+                "enum": ["metric", "imperial", "kelvin"],
+                "default": "metric"
+              }
+            },
+            "required": ["city"]
+          },
+          "http_mapping": {
+            "method": "GET",
+            "path": "/weather",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "parameter_mappings": [
+              {
+                "name": "city",
+                "location": "query",
+                "key": "q"
+              },
+              {
+                "name": "units",
+                "location": "query"
+              }
+            ]
+          }
+        }
+      ],
+      "options": {
+        "panic_if_invalid": true,
+        "log_enabled": true,
+        "auth_tokens": ["weather-token-123"],
+        "tool_filter": {
+          "mode": "allow",
+          "tools": ["get_weather"]
+        }
+      }
+    },
+    "github_api": {
+      "target_api": {
+        "base_url": "https://api.github.com",
+        "timeout": "20s",
+        "auth": {
+          "type": "bearer",
+          "token": "${GITHUB_TOKEN}"
+        }
+      },
+      "tools": [
+        {
+          "name": "get_user",
+          "description": "获取GitHub用户信息",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "username": {
+                "type": "string",
+                "description": "GitHub用户名"
+              }
+            },
+            "required": ["username"]
+          },
+          "http_mapping": {
+            "method": "GET",
+            "path": "/users/{username}",
+            "headers": {
+              "Accept": "application/vnd.github.v3+json",
+              "User-Agent": "MCP-Adapter/1.0"
+            },
+            "parameter_mappings": [
+              {
+                "name": "username",
+                "location": "path"
+              }
+            ]
+          }
+        },
+        {
+          "name": "list_repos",
+          "description": "列出用户的公开仓库",
+          "input_schema": {
+            "type": "object",
+            "properties": {
+              "username": {
+                "type": "string",
+                "description": "GitHub用户名"
+              },
+              "per_page": {
+                "type": "integer",
+                "description": "每页返回的仓库数量",
+                "default": 30,
+                "minimum": 1,
+                "maximum": 100
+              }
+            },
+            "required": ["username"]
+          },
+          "http_mapping": {
+            "method": "GET",
+            "path": "/users/{username}/repos",
+            "headers": {
+              "Accept": "application/vnd.github.v3+json",
+              "User-Agent": "MCP-Adapter/1.0"
+            },
+            "parameter_mappings": [
+              {
+                "name": "username",
+                "location": "path"
+              },
+              {
+                "name": "per_page",
+                "location": "query"
+              }
+            ]
+          }
+        }
+      ],
+      "options": {
+        "panic_if_invalid": true,
+        "log_enabled": false,
+        "auth_tokens": ["github-access-token"],
+        "tool_filter": {
+          "mode": "deny",
+          "tools": []
+        }
       }
     }
-  ],
-  "prompts": [],
-  "resources": []
-} 
+  }
+}

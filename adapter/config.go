@@ -1,32 +1,59 @@
-package adapter
+package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"time"
 )
 
-// Config 是适配器服务器的根配置结构
-type Config struct {
-	Server    ServerConfig     `json:"server"`    // 适配器服务器自身的配置
-	TargetAPI TargetAPIConfig  `json:"targetAPI"` // 目标 HTTP API 的配置
-	Tools     []ToolConfig     `json:"tools"`     // 工具定义和映射规则
-	Prompts   []PromptConfig   `json:"prompts"`   // 静态提示定义
-	Resources []ResourceConfig `json:"resources"` // 静态资源定义
+// AdapterProxyConfig 定义了适配器代理服务器的配置
+type AdapterProxyConfig struct {
+	BaseURL string   `json:"base_url"`          // 代理服务器的基础URL
+	Addr    string   `json:"addr"`              // 监听地址和端口
+	Name    string   `json:"name"`              // 代理服务器名称
+	Version string   `json:"version"`           // 代理服务器版本
+	Options *Options `json:"options,omitempty"` // 代理服务器选项
 }
 
-// ServerConfig 定义了适配器服务器的监听地址、名称等信息
-type ServerConfig struct {
-	Addr    string `json:"addr"`    // 监听地址和端口, e.g., ":9091"
-	Name    string `json:"name"`    // 服务器名称
-	Version string `json:"version"` // 服务器版本
-	BaseURL string `json:"baseURL"` // 服务器对外暴露的基础 URL
+// Options 定义了适配器的通用选项
+type Options struct {
+	PanicIfInvalid bool              `json:"panicIfInvalid,omitempty"` // 如果适配器无效是否panic
+	LogEnabled     bool              `json:"log_enabled,omitempty"`    // 是否启用日志
+	AuthTokens     []string          `json:"authTokens,omitempty"`     // 认证令牌列表
+	ToolFilter     *ToolFilterConfig `json:"toolFilter,omitempty"`     // 工具过滤配置
+}
+
+// ToolFilterMode 是工具过滤模式的枚举
+type ToolFilterMode string
+
+// 工具过滤模式常量
+const (
+	ToolFilterModeAllow ToolFilterMode = "allow" // 白名单模式：只允许列表中的工具
+	ToolFilterModeBlock ToolFilterMode = "block" // 黑名单模式：阻止列表中的工具
+)
+
+// ToolFilterConfig 工具过滤配置
+type ToolFilterConfig struct {
+	Mode  ToolFilterMode `json:"mode,omitempty"`  // 过滤模式：allow或block
+	Tools []string       `json:"tools,omitempty"` // 工具名称列表
+}
+
+// AdapterServerConfig 定义了单个适配器服务器的配置
+type AdapterServerConfig struct {
+	TargetAPI TargetAPIConfig  `json:"targetAPI"`         // 目标 HTTP API 的配置
+	Tools     []ToolConfig     `json:"tools"`             // 工具定义和映射规则
+	Prompts   []PromptConfig   `json:"prompts"`           // 静态提示定义
+	Resources []ResourceConfig `json:"resources"`         // 静态资源定义
+	Options   *Options         `json:"options,omitempty"` // 服务器特定选项
 }
 
 // TargetAPIConfig 定义了被适配器包装的后端 HTTP API 的信息
 type TargetAPIConfig struct {
-	BaseURL string            `json:"baseURL"` // 目标 API 的基础 URL
-	Headers map[string]string `json:"headers"` // 添加到每个请求的固定头部
-	Auth    AuthConfig        `json:"auth"`    // 向目标 API 进行身份验证的方式
+	BaseURL string            `json:"base_url"`          // 目标 API 的基础 URL
+	Headers map[string]string `json:"headers"`           // 添加到每个请求的固定头部
+	Auth    AuthConfig        `json:"auth"`              // 向目标 API 进行身份验证的方式
+	Timeout time.Duration     `json:"timeout,omitempty"` // 请求超时时间
 }
 
 // AuthConfig 定义了身份验证的类型和具体配置
@@ -76,20 +103,88 @@ type ParameterMapping struct {
 	Required bool        `json:"required"` // 该参数是否必需
 }
 
-// LoadConfig 从指定的文件路径加载并解析配置
-func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+// NewConfig 是新的适配器配置结构体，支持多服务器代理
+type NewConfig struct {
+	AdapterProxy   *AdapterProxyConfig             `json:"adapter_proxy"`   // 代理服务器配置
+	AdapterServers map[string]*AdapterServerConfig `json:"adapter_servers"` // 后端适配器服务器配置映射，键为服务器名称
+}
+
+// LoadNewConfig 加载新的配置文件
+func LoadNewConfig(filename string) (*NewConfig, error) {
+	data, err := os.ReadFile(filename)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
 
-	// 替换环境变量
+	// 展开环境变量
 	expandedData := os.ExpandEnv(string(data))
 
-	var config Config
+	var config NewConfig
 	err = json.Unmarshal([]byte(expandedData), &config)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
+
+	// 验证必需字段
+	if config.AdapterProxy == nil {
+		return nil, fmt.Errorf("adapter_proxy is required")
+	}
+	if config.AdapterProxy.BaseURL == "" {
+		return nil, fmt.Errorf("adapter_proxy.base_url is required")
+	}
+	if config.AdapterProxy.Addr == "" {
+		return nil, fmt.Errorf("adapter_proxy.addr is required")
+	}
+
+	// 应用默认值
+	if config.AdapterProxy.Options == nil {
+		config.AdapterProxy.Options = &Options{
+			PanicIfInvalid: false,
+			LogEnabled:     true,
+			AuthTokens:     []string{},
+			ToolFilter: &ToolFilterConfig{
+				Mode:  "block",
+				Tools: []string{},
+			},
+		}
+	}
+
+	// 为每个服务器配置应用继承和默认值
+	for name, serverConfig := range config.AdapterServers {
+		if serverConfig.Options == nil {
+			serverConfig.Options = &Options{
+				PanicIfInvalid: config.AdapterProxy.Options.PanicIfInvalid,
+				LogEnabled:     config.AdapterProxy.Options.LogEnabled,
+				AuthTokens:     make([]string, len(config.AdapterProxy.Options.AuthTokens)),
+			}
+			copy(serverConfig.Options.AuthTokens, config.AdapterProxy.Options.AuthTokens)
+
+			if config.AdapterProxy.Options.ToolFilter != nil {
+				serverConfig.Options.ToolFilter = &ToolFilterConfig{
+					Mode:  config.AdapterProxy.Options.ToolFilter.Mode,
+					Tools: make([]string, len(config.AdapterProxy.Options.ToolFilter.Tools)),
+				}
+				copy(serverConfig.Options.ToolFilter.Tools, config.AdapterProxy.Options.ToolFilter.Tools)
+			}
+		} else {
+			// 从代理配置继承选项（如果服务器配置中未设置）
+			if len(serverConfig.Options.AuthTokens) == 0 && len(config.AdapterProxy.Options.AuthTokens) > 0 {
+				serverConfig.Options.AuthTokens = make([]string, len(config.AdapterProxy.Options.AuthTokens))
+				copy(serverConfig.Options.AuthTokens, config.AdapterProxy.Options.AuthTokens)
+			}
+
+			if serverConfig.Options.ToolFilter == nil && config.AdapterProxy.Options.ToolFilter != nil {
+				serverConfig.Options.ToolFilter = &ToolFilterConfig{
+					Mode:  config.AdapterProxy.Options.ToolFilter.Mode,
+					Tools: make([]string, len(config.AdapterProxy.Options.ToolFilter.Tools)),
+				}
+				copy(serverConfig.Options.ToolFilter.Tools, config.AdapterProxy.Options.ToolFilter.Tools)
+			}
+		}
+
+		// 更新映射中的配置
+		config.AdapterServers[name] = serverConfig
+	}
+
 	return &config, nil
 }

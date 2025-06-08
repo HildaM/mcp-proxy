@@ -1,4 +1,4 @@
-package adapter
+package main
 
 import (
 	"bytes"
@@ -8,8 +8,9 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
-	"text/template"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 )
@@ -21,44 +22,80 @@ type ToolHandler struct {
 	Client          *http.Client
 }
 
-// Handle 是处理工具调用的主函数，它实现了 server.ToolHandlerFunc 接口
+// Handle is the main function for handling tool calls. It implements the server.ToolHandlerFunc interface.
+// It builds an HTTP request based on the tool configuration, sends it to the target API,
+// and transforms the HTTP response into an MCP tool call result.
 func (h *ToolHandler) Handle(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	// 在 v0.28.0, 参数已经是解码后的 map，无需再次 Unmarshal
-	params := req.Params.Arguments
+	// Type assert params to map[string]interface{}
+	params, ok := req.Params.Arguments.(map[string]interface{})
+	if !ok {
+		log.Printf("[TOOL_ERROR] Invalid parameters type for tool %s: expected map[string]interface{}, got %T", h.ToolConfig.Name, req.Params.Arguments)
+		return nil, fmt.Errorf("invalid parameters: expected map[string]interface{}, got %T", req.Params.Arguments)
+	}
 
-	targetURL := h.buildURL(params)
+	// 1. Validate required parameters
+	if err := h.validateParams(params); err != nil {
+		log.Printf("[TOOL_ERROR] Parameter validation failed for tool %s: %v", h.ToolConfig.Name, err)
+		return nil, fmt.Errorf("invalid parameters: %w", err)
+	}
 
+	// 2. Build URL with path parameters
+	targetURL, err := h.buildURL(params)
+	if err != nil {
+		log.Printf("[TOOL_ERROR] URL building failed for tool %s: %v", h.ToolConfig.Name, err)
+		return nil, fmt.Errorf("failed to build URL: %w", err)
+	}
+	log.Printf("[TOOL_REQUEST] Target URL: %s", targetURL)
+
+	// 3. Prepare request body for POST/PUT requests
 	var body io.Reader
-	var err error
 	if h.ToolConfig.HTTPMapping.Method == http.MethodPost || h.ToolConfig.HTTPMapping.Method == http.MethodPut {
 		body, err = h.prepareBody(params)
 		if err != nil {
+			log.Printf("[TOOL_ERROR] Request body preparation failed for tool %s: %v", h.ToolConfig.Name, err)
 			return nil, fmt.Errorf("failed to prepare request body: %w", err)
 		}
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, h.ToolConfig.HTTPMapping.Method, targetURL, body)
+	// 4. Create HTTP request
+	httpReq, err := http.NewRequestWithContext(ctx, h.ToolConfig.HTTPMapping.Method, targetURL.String(), body)
 	if err != nil {
+		log.Printf("[TOOL_ERROR] HTTP request creation failed for tool %s: %v", h.ToolConfig.Name, err)
 		return nil, fmt.Errorf("failed to create http request: %w", err)
 	}
 
+	// 5. Set headers, query parameters, and authentication
 	h.setHeaders(httpReq, params)
-	h.setQueryParams(httpReq, params)
-	h.setAuth(httpReq)
+	h.addQueryParams(httpReq, params)
 
 	log.Printf("Dispatching request: %s %s", httpReq.Method, httpReq.URL.String())
 
-	resp, err := h.Client.Do(httpReq)
+	// 6. Execute request with retry logic
+	var resp *http.Response
+	maxRetries := 3
+	for i := 0; i < maxRetries; i++ {
+		resp, err = h.Client.Do(httpReq)
+		if err == nil {
+			break
+		}
+		log.Printf("Request attempt %d failed: %v", i+1, err)
+		if i < maxRetries-1 {
+			time.Sleep(time.Duration(i+1) * time.Second)
+		}
+	}
 	if err != nil {
-		return nil, fmt.Errorf("http request failed: %w", err)
+		return nil, fmt.Errorf("http request failed after %d attempts: %w", maxRetries, err)
 	}
 	defer resp.Body.Close()
 
+	// 7. Read response body
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
+		log.Printf("[TOOL_ERROR] Response body reading failed for tool %s: %v", h.ToolConfig.Name, err)
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
+	// 8. Handle errors based on status code
 	if customErr, ok := h.ToolConfig.ErrorMapping[resp.StatusCode]; ok {
 		return nil, fmt.Errorf(customErr)
 	}
@@ -67,39 +104,84 @@ func (h *ToolHandler) Handle(ctx context.Context, req mcp.CallToolRequest) (*mcp
 		return nil, fmt.Errorf("http error: status code %d, body: %s", resp.StatusCode, string(respBody))
 	}
 
+	// 9. Process successful response
 	var resultData interface{}
+	// Try to unmarshal as JSON, if fails, return as raw string.
 	if err := json.Unmarshal(respBody, &resultData); err != nil {
-		resultData = string(respBody)
+		// If unmarshalling fails, treat the entire response body as a single text string.
+		log.Printf("[TOOL_SUCCESS] Tool %s completed (response as text): %s", h.ToolConfig.Name, string(respBody))
+		return &mcp.CallToolResult{
+			Content: []mcp.Content{
+				mcp.TextContent{Text: string(respBody)},
+			},
+		}, nil
 	}
 
+	// If unmarshalling was successful, resultData could be a map, slice, or primitive.
+	// We need to marshal it back to JSON bytes to be safe if it's not a simple string.
+	// However, mcp.TextContent expects a string.
+	// For simplicity, we'll marshal it back to a JSON string and pass that.
+	// A more sophisticated approach might inspect resultData's type.
 	resultBytes, err := json.Marshal(resultData)
 	if err != nil {
+		log.Printf("[TOOL_ERROR] Result data marshaling failed for tool %s: %v", h.ToolConfig.Name, err)
 		return nil, fmt.Errorf("failed to marshal result data: %w", err)
 	}
 
+	log.Printf("[TOOL_SUCCESS] Tool %s completed (response as JSON): %s", h.ToolConfig.Name, string(resultBytes))
 	return &mcp.CallToolResult{
-		Result: json.RawMessage(resultBytes),
+		Content: []mcp.Content{
+			mcp.TextContent{Text: string(resultBytes)},
+		},
 	}, nil
 }
 
-// buildURL 根据配置和输入参数构建最终的请求 URL
-func (h *ToolHandler) buildURL(params map[string]interface{}) string {
-	path := h.ToolConfig.HTTPMapping.Path
-	// 替换路径参数, e.g., /users/{userId} -> /users/123
+// validateParams checks if all required parameters are present in the input.
+func (h *ToolHandler) validateParams(params map[string]interface{}) error {
 	for _, p := range h.ToolConfig.HTTPMapping.ParameterMapping {
-		if p.In == "path" {
-			placeholder := "{" + p.Target + "}"
-			if val, ok := params[p.Source]; ok {
-				path = strings.Replace(path, placeholder, fmt.Sprint(val), -1)
+		if p.Required {
+			if _, ok := params[p.Source]; !ok && p.Default == nil {
+				return fmt.Errorf("required parameter '%s' is missing", p.Source)
 			}
 		}
 	}
-	return h.TargetAPIConfig.BaseURL + path
+	return nil
 }
 
-// setQueryParams 从输入参数中提取值并设置到 URL 的查询字符串中
-func (h *ToolHandler) setQueryParams(req *http.Request, params map[string]interface{}) {
+// buildURL constructs the final request URL by parsing the base URL and replacing path parameters.
+func (h *ToolHandler) buildURL(params map[string]interface{}) (*url.URL, error) {
+	// Start with the base URL from the target API config
+	baseURL, err := url.Parse(h.TargetAPIConfig.BaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid target API base URL: %w", err)
+	}
+
+	// Append the path from the HTTP mapping
+	path := h.ToolConfig.HTTPMapping.Path
+	for _, p := range h.ToolConfig.HTTPMapping.ParameterMapping {
+		if p.In == "path" {
+			if val, ok := params[p.Source]; ok {
+				// URL-escape the path segment to handle special characters
+				escapedVal := url.PathEscape(fmt.Sprint(val))
+				path = strings.Replace(path, "{"+p.Target+"}", escapedVal, -1)
+			}
+		}
+	}
+
+	// Resolve the final path against the base URL
+	finalURL, err := baseURL.Parse(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse path against base URL: %w", err)
+	}
+
+	return finalURL, nil
+}
+
+// addQueryParams adds query parameters from tool inputs and authentication settings.
+func (h *ToolHandler) addQueryParams(req *http.Request, params map[string]interface{}) {
 	q := req.URL.Query()
+
+	// Add params from mapping
 	for _, p := range h.ToolConfig.HTTPMapping.ParameterMapping {
 		if p.In == "query" {
 			if val, ok := params[p.Source]; ok {
@@ -109,16 +191,26 @@ func (h *ToolHandler) setQueryParams(req *http.Request, params map[string]interf
 			}
 		}
 	}
+
+	// Add auth params
+	auth := h.TargetAPIConfig.Auth
+	if auth.Type == "apiKey" && auth.Config["location"] == "query" {
+		if key, val := auth.Config["key"], auth.Config["value"]; key != "" && val != "" {
+			q.Add(key, val)
+		}
+	}
+
 	req.URL.RawQuery = q.Encode()
 }
 
-// setHeaders 从输入参数中提取值并设置到 HTTP 请求头中
+// setHeaders sets headers from global config, parameter mapping, and authentication.
 func (h *ToolHandler) setHeaders(req *http.Request, params map[string]interface{}) {
-	// 添加全局请求头
+	// Add global headers
 	for key, val := range h.TargetAPIConfig.Headers {
 		req.Header.Set(key, val)
 	}
-	// 添加动态请求头
+
+	// Add dynamic headers from params
 	for _, p := range h.ToolConfig.HTTPMapping.ParameterMapping {
 		if p.In == "header" {
 			if val, ok := params[p.Source]; ok {
@@ -128,60 +220,78 @@ func (h *ToolHandler) setHeaders(req *http.Request, params map[string]interface{
 			}
 		}
 	}
-	// 如果有请求体，设置 Content-Type
+
+	// Add auth headers
+	auth := h.TargetAPIConfig.Auth
+	if auth.Type == "apiKey" && auth.Config["location"] == "header" {
+		if key, val := auth.Config["key"], auth.Config["value"]; key != "" && val != "" {
+			req.Header.Set(key, val)
+		}
+	} else if auth.Type == "bearer" {
+		if token := auth.Config["token"]; token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
+
+	// Set Content-Type for requests with a body
 	if req.Body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
 }
 
-// setAuth 根据配置向请求中添加认证信息
-func (h *ToolHandler) setAuth(req *http.Request) {
-	auth := h.TargetAPIConfig.Auth
-	switch auth.Type {
-	case "apiKey":
-		key := auth.Config["key"]
-		value := auth.Config["value"]
-		location := auth.Config["location"]
-		if key == "" || value == "" {
-			return
+// prepareBody creates the io.Reader for the request body.
+// It discards the complex and unsafe text/template approach.
+// If a bodyTemplate is defined, it's used as a map to structure the body.
+// Otherwise, all input parameters are marshalled into the body.
+func (h *ToolHandler) prepareBody(params map[string]interface{}) (io.Reader, error) {
+	var bodyData interface{}
+
+	if h.ToolConfig.HTTPMapping.BodyTemplate == nil {
+		// No template, use all params as the body
+		bodyData = params
+	} else {
+		// A template exists, unmarshal it into a map
+		var templateMap map[string]interface{}
+		if err := json.Unmarshal(*h.ToolConfig.HTTPMapping.BodyTemplate, &templateMap); err != nil {
+			return nil, fmt.Errorf("failed to parse bodyTemplate JSON: %w", err)
 		}
-		if location == "header" {
-			req.Header.Set(key, value)
-		} else if location == "query" {
-			q := req.URL.Query()
-			q.Add(key, value)
-			req.URL.RawQuery = q.Encode()
-		}
-	case "bearer":
-		token := auth.Config["token"]
-		if token != "" {
-			req.Header.Set("Authorization", "Bearer "+token)
-		}
+
+		// Recursively substitute placeholders like "{{.paramName}}" in the template map
+		bodyData = substitute(templateMap, params)
 	}
+
+	bodyBytes, err := json.Marshal(bodyData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal final request body: %w", err)
+	}
+	return bytes.NewBuffer(bodyBytes), nil
 }
 
-// prepareBody 根据 bodyTemplate 和输入参数生成请求体
-func (h *ToolHandler) prepareBody(params map[string]interface{}) (io.Reader, error) {
-	if h.ToolConfig.HTTPMapping.BodyTemplate == nil {
-		// 如果没有模板，直接将所有参数序列化为 JSON
-		bodyBytes, err := json.Marshal(params)
-		if err != nil {
-			return nil, err
+// substitute recursively replaces placeholder values in the template structure.
+func substitute(template interface{}, params map[string]interface{}) interface{} {
+	switch t := template.(type) {
+	case string:
+		// Check if it's a placeholder of the form "{{.key}}"
+		if strings.HasPrefix(t, "{{.") && strings.HasSuffix(t, "}}") {
+			key := strings.TrimSuffix(strings.TrimPrefix(t, "{{."), "}}")
+			if val, ok := params[key]; ok {
+				return val
+			}
 		}
-		return bytes.NewBuffer(bodyBytes), nil
+		return t
+	case map[string]interface{}:
+		result := make(map[string]interface{}, len(t))
+		for k, v := range t {
+			result[k] = substitute(v, params)
+		}
+		return result
+	case []interface{}:
+		result := make([]interface{}, len(t))
+		for i, v := range t {
+			result[i] = substitute(v, params)
+		}
+		return result
+	default:
+		return t
 	}
-
-	// 如果有模板，使用模板进行渲染
-	tmpl, err := template.New("body").Parse(string(*h.ToolConfig.HTTPMapping.BodyTemplate))
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse body template: %w", err)
-	}
-
-	var buf bytes.Buffer
-	err = tmpl.Execute(&buf, params)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute body template: %w", err)
-	}
-
-	return &buf, nil
 }
