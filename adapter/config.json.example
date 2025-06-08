@@ -9,7 +9,7 @@
       "log_enabled": true,
       "auth_tokens": [],
       "tool_filter": {
-        "mode": "allow",
+        "mode": "block",
         "tools": []
       }
     }
@@ -71,11 +71,7 @@
       "options": {
         "panic_if_invalid": false,
         "log_enabled": true,
-        "auth_tokens": [],
-        "tool_filter": {
-          "mode": "allow",
-          "tools": ["get_posts", "get_post_by_id"]
-        }
+        "auth_tokens": []
       }
     },
     "weather_api": {
@@ -134,8 +130,8 @@
         "log_enabled": true,
         "auth_tokens": ["weather-token-123"],
         "tool_filter": {
-          "mode": "allow",
-          "tools": ["get_weather"]
+          "mode": "block",
+          "tools": []
         }
       }
     },
@@ -222,7 +218,7 @@
         "log_enabled": false,
         "auth_tokens": ["github-access-token"],
         "tool_filter": {
-          "mode": "deny",
+          "mode": "block",
           "tools": []
         }
       }
